@@ -1,0 +1,178 @@
+// Experiment 8: Automated Blue-Green deployment using Jenkins, Kubernetes and Docker
+//
+// Flow: detect live colour -> build new image -> deploy to the IDLE colour
+//       -> smoke test it -> (approve) -> switch the live Service -> verify
+// If anything fails before the switch, users never notice: live traffic stays where it was.
+
+NS = 'exp8'
+K8S = 'exp8-blue-green/k8s'
+
+def pointService(String svc, String color) {
+    sh """kubectl patch service ${svc} -n exp8 \
+          -p '{"spec":{"selector":{"app":"demo-app","version":"${color}"}}}'"""
+}
+
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'ACTION', choices: ['deploy', 'rollback'],
+               description: 'deploy = release new version to idle colour; rollback = send traffic back to the other colour')
+        string(name: 'DOCKERHUB_USER', defaultValue: 'your-dockerhub-username',
+               description: 'Your Docker Hub username')
+        booleanParam(name: 'PUSH_TO_DOCKERHUB', defaultValue: false,
+                     description: 'Push image to Docker Hub (not needed with Docker Desktop Kubernetes)')
+        booleanParam(name: 'AUTO_SWITCH', defaultValue: false,
+                     description: 'Switch traffic without asking for manual approval')
+    }
+
+    environment {
+        IMAGE_NAME = "${params.DOCKERHUB_USER}/devops-demo-app"
+        IMAGE_TAG  = "v${BUILD_NUMBER}"
+    }
+
+    options { timestamps() }
+
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        stage('Detect Live Environment') {
+            steps {
+                script {
+                    sh "kubectl apply -f ${K8S}/namespace.yaml"
+                    def svcExists = sh(script: "kubectl get service demo-app-live -n ${NS}", returnStatus: true) == 0
+                    if (!svcExists) {
+                        // very first run: create the services, start with BLUE
+                        sh "kubectl apply -f ${K8S}/services.yaml"
+                        env.LIVE_COLOR = 'none'
+                        env.TARGET_COLOR = 'blue'
+                    } else {
+                        env.LIVE_COLOR = sh(script: "kubectl get service demo-app-live -n ${NS} -o jsonpath='{.spec.selector.version}'",
+                                            returnStdout: true).trim()
+                        env.TARGET_COLOR = (env.LIVE_COLOR == 'blue') ? 'green' : 'blue'
+                    }
+                    env.SWITCHED = 'false'
+                    echo "LIVE = ${env.LIVE_COLOR}  |  NEW VERSION GOES TO = ${env.TARGET_COLOR}"
+                }
+            }
+        }
+
+        stage('Unit Test') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps { dir('app') { sh 'npm test' } }
+        }
+
+        stage('Build Image') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} app/"
+            }
+        }
+
+        stage('Push Image') {
+            when { expression { params.ACTION == 'deploy' && params.PUSH_TO_DOCKERHUB } }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub',
+                                 usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+                    sh 'echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin'
+                    sh "docker push ${IMAGE_NAME}:${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Deploy to Idle Environment') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                script {
+                    sh """
+                        sed -e 's|__COLOR__|${env.TARGET_COLOR}|g' \
+                            -e 's|__IMAGE__|${IMAGE_NAME}:${IMAGE_TAG}|' \
+                            -e 's|__VERSION__|${IMAGE_TAG}|' \
+                            ${K8S}/deployment-template.yaml | kubectl apply -f -
+                        kubectl rollout status deployment/demo-app-${env.TARGET_COLOR} -n ${NS} --timeout=120s
+                    """
+                    pointService('demo-app-preview', env.TARGET_COLOR)
+                    echo "New version ${IMAGE_TAG} is on ${env.TARGET_COLOR.toUpperCase()} - preview at http://localhost:30018"
+                }
+            }
+        }
+
+        stage('Smoke Test Idle Environment') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                script {
+                    def health = sh(script: "kubectl exec -n ${NS} deploy/demo-app-${env.TARGET_COLOR} -- wget -qO- http://localhost:3000/health",
+                                    returnStdout: true).trim()
+                    echo "Health response: ${health}"
+                    if (!health.contains('"status":"UP"') || !health.contains(env.TARGET_COLOR)) {
+                        error "Smoke test FAILED on ${env.TARGET_COLOR} - live traffic was NOT switched"
+                    }
+                }
+            }
+        }
+
+        stage('Approve Switch') {
+            when { expression { params.ACTION == 'deploy' && !params.AUTO_SWITCH && env.LIVE_COLOR != 'none' } }
+            steps {
+                timeout(time: 15, unit: 'MINUTES') {
+                    input message: "Preview is at http://localhost:30018. Switch LIVE traffic from ${env.LIVE_COLOR.toUpperCase()} to ${env.TARGET_COLOR.toUpperCase()}?",
+                          ok: 'Switch traffic'
+                }
+            }
+        }
+
+        stage('Prepare Rollback Target') {
+            when { expression { params.ACTION == 'rollback' } }
+            steps {
+                script {
+                    if (env.LIVE_COLOR == 'none') { error 'Nothing deployed yet - nothing to roll back to' }
+                    sh """
+                        kubectl get deployment demo-app-${env.TARGET_COLOR} -n ${NS}
+                        kubectl scale deployment demo-app-${env.TARGET_COLOR} -n ${NS} --replicas=3
+                        kubectl rollout status deployment/demo-app-${env.TARGET_COLOR} -n ${NS} --timeout=120s
+                    """
+                }
+            }
+        }
+
+        stage('Switch Live Traffic') {
+            steps {
+                script {
+                    pointService('demo-app-live', env.TARGET_COLOR)
+                    env.SWITCHED = 'true'
+                    if (env.LIVE_COLOR != 'none') {
+                        // old version stays running on the preview port for instant rollback
+                        pointService('demo-app-preview', env.LIVE_COLOR)
+                    }
+                    echo "LIVE traffic now goes to ${env.TARGET_COLOR.toUpperCase()}"
+                }
+            }
+        }
+
+        stage('Verify') {
+            steps {
+                sh "kubectl get service demo-app-live -n ${NS} -o wide"
+                sh "kubectl get pods -n ${NS} -L version"
+                sh "kubectl get endpoints demo-app-live -n ${NS}"
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "DONE: users see ${env.TARGET_COLOR?.toUpperCase()} at http://localhost:30008 ; previous version kept on ${env.LIVE_COLOR} for rollback"
+        }
+        failure {
+            script {
+                if (env.SWITCHED == 'true' && env.LIVE_COLOR && env.LIVE_COLOR != 'none') {
+                    echo "Failure after switch - sending traffic back to ${env.LIVE_COLOR}"
+                    pointService('demo-app-live', env.LIVE_COLOR)
+                } else {
+                    echo "Failure before switch - users were never affected (live = ${env.LIVE_COLOR})"
+                }
+            }
+        }
+    }
+}

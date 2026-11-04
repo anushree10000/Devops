@@ -1,0 +1,46 @@
+# One template for both environments. Jenkins replaces __COLOR__, __IMAGE__ and __VERSION__
+# to create either "demo-app-blue" or "demo-app-green".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app-__COLOR__
+  namespace: exp8
+  labels:
+    app: demo-app
+    version: __COLOR__
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: demo-app
+      version: __COLOR__
+  template:
+    metadata:
+      labels:
+        app: demo-app
+        version: __COLOR__
+    spec:
+      containers:
+        - name: demo-app
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: APP_COLOR
+              value: "__COLOR__"
+            - name: APP_VERSION
+              value: "__VERSION__"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

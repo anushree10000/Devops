@@ -1,0 +1,32 @@
+# Starts Jenkins (port 8080) and SonarQube (port 9000) on your laptop.
+# Run from this folder:   docker compose up -d --build
+services:
+  jenkins:
+    build: .
+    container_name: jenkins
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock          # use the host's Docker
+      - ~/.kube/config:/root/.kube/config:ro               # use the host's Kubernetes
+    environment:
+      - KUBECONFIG=/root/.kube/config
+    extra_hosts:
+      - "kubernetes.docker.internal:host-gateway"          # Docker Desktop Kubernetes API
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  sonarqube:                                               # only needed for Experiment 9
+    image: sonarqube:lts-community
+    container_name: sonarqube
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+    restart: unless-stopped
+
+volumes:
+  jenkins_home:
+  sonarqube_data:

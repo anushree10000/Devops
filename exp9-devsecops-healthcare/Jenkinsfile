@@ -1,0 +1,161 @@
+// Experiment 9: Secure DevOps (DevSecOps) pipeline for a healthcare application
+//
+//  Secret scan -> Tests -> Dependency scan (SCA) -> Code scan (SAST) -> Quality gate
+//  -> Build -> Image scan -> Config/IaC scan -> Secure deploy -> Runtime checks -> DAST
+//
+// Every security stage is a GATE: a HIGH/CRITICAL finding stops the release.
+
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'IMAGE_NAME', defaultValue: 'patient-portal',
+               description: 'Docker image name')
+        booleanParam(name: 'RUN_SONARQUBE', defaultValue: true,
+                     description: 'Run SonarQube SAST + Quality Gate (needs SonarQube set up in Jenkins)')
+    }
+
+    environment {
+        DIR       = 'exp9-devsecops-healthcare'
+        IMAGE_TAG = "v${BUILD_NUMBER}"
+        IMAGE     = "${params.IMAGE_NAME}:v${BUILD_NUMBER}"
+        APP_URL   = 'http://host.docker.internal:30009'
+    }
+
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'mkdir -p reports'
+            }
+        }
+
+        stage('1. Secret Scan (Gitleaks)') {
+            steps {
+                // fails the build if any password / API key / token is committed to Git
+                sh 'gitleaks detect --source . --no-banner --redact --report-format json --report-path reports/gitleaks-report.json'
+            }
+        }
+
+        stage('2. Unit & Security Tests') {
+            steps {
+                dir("${DIR}/app") { sh 'npm test' }
+            }
+        }
+
+        stage('3. Dependency Scan (SCA - Trivy)') {
+            steps {
+                sh "trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 ${DIR}/app"
+            }
+        }
+
+        stage('4. Static Code Analysis (SAST - SonarQube)') {
+            when { expression { params.RUN_SONARQUBE } }
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScanner'
+                    dir(env.DIR) {
+                        withSonarQubeEnv('sonarqube') {
+                            sh "${scannerHome}/bin/sonar-scanner"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('5. Quality Gate') {
+            when { expression { params.RUN_SONARQUBE } }
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('6. Build Hardened Image') {
+            steps {
+                sh "docker build -t ${IMAGE} ${DIR}/app"
+            }
+        }
+
+        stage('7. Container Image Scan (Trivy)') {
+            steps {
+                // report everything HIGH+ ; block the release on CRITICAL vulnerabilities that have a fix
+                sh "trivy image --severity HIGH,CRITICAL --format json --output reports/trivy-image.json ${IMAGE}"
+                sh "trivy image --severity HIGH,CRITICAL ${IMAGE}"
+                sh "trivy image --severity CRITICAL --ignore-unfixed --exit-code 1 ${IMAGE}"
+            }
+        }
+
+        stage('8. Kubernetes & Dockerfile Config Scan (IaC)') {
+            steps {
+                sh "trivy config --severity HIGH,CRITICAL --exit-code 1 ${DIR}"
+            }
+        }
+
+        stage('9. Secure Deploy to Kubernetes') {
+            steps {
+                sh "kubectl apply -f ${DIR}/k8s/namespace.yaml"
+                // API token comes from Jenkins credentials -> Kubernetes Secret (never written in Git)
+                withCredentials([string(credentialsId: 'patient-portal-api-token', variable: 'API_TOKEN')]) {
+                    sh '''
+                        kubectl create secret generic patient-portal-secret -n healthcare \
+                            --from-literal=api-token="$API_TOKEN" \
+                            --dry-run=client -o yaml | kubectl apply -f -
+                    '''
+                }
+                sh """
+                    sed 's|__IMAGE__|${IMAGE}|' ${DIR}/k8s/deployment.yaml | kubectl apply -f -
+                    kubectl apply -f ${DIR}/k8s/network-policy.yaml
+                    kubectl rollout status deployment/patient-portal -n healthcare --timeout=120s
+                    kubectl get pods,svc,networkpolicy -n healthcare
+                """
+            }
+        }
+
+        stage('10. Post-Deploy Security Checks') {
+            steps {
+                sh '''
+                    sleep 5
+                    echo "--- Patient data without a token must be blocked (expect 401) ---"
+                    CODE=$(curl -s -o /dev/null -w "%{http_code}" $APP_URL/api/patients)
+                    echo "HTTP $CODE"; [ "$CODE" = "401" ]
+
+                    echo "--- Security headers must be present ---"
+                    curl -sI $APP_URL/health | tee reports/headers.txt
+                    grep -qi "x-frame-options: DENY" reports/headers.txt
+                    grep -qi "strict-transport-security" reports/headers.txt
+                    grep -qi "content-security-policy" reports/headers.txt
+                '''
+            }
+        }
+
+        stage('11. Dynamic Scan (DAST - OWASP ZAP)') {
+            steps {
+                // baseline scan of the running app; -I = don't fail on warnings, only on FAILs
+                sh '''
+                    docker run --rm --add-host=host.docker.internal:host-gateway \
+                        ghcr.io/zaproxy/zaproxy:stable \
+                        zap-baseline.py -t $APP_URL -I
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
+        }
+        success {
+            echo "SECURE RELEASE ${IMAGE} passed all security gates and is live at http://localhost:30009"
+        }
+        failure {
+            echo 'A security gate failed - the release was BLOCKED. Check the stage logs and reports/ artifacts.'
+        }
+    }
+}

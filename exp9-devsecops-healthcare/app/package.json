@@ -1,0 +1,11 @@
+{
+  "name": "patient-portal",
+  "version": "1.0.0",
+  "description": "Demo healthcare API for the DevSecOps experiment",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test.js"
+  },
+  "license": "MIT"
+}

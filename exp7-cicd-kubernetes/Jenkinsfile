@@ -1,0 +1,90 @@
+// Experiment 7: CI/CD pipeline to deploy a Dockerized app on Kubernetes using Jenkins
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'DOCKERHUB_USER', defaultValue: 'your-dockerhub-username',
+               description: 'Your Docker Hub username')
+        booleanParam(name: 'PUSH_TO_DOCKERHUB', defaultValue: true,
+                     description: 'Push the image to Docker Hub (needs the "dockerhub" credential)')
+    }
+
+    environment {
+        IMAGE_NAME = "${params.DOCKERHUB_USER}/devops-demo-app"
+        IMAGE_TAG  = "v${BUILD_NUMBER}"
+        K8S_DIR    = 'exp7-cicd-kubernetes/k8s'
+    }
+
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git log -1 --oneline'
+            }
+        }
+
+        stage('Unit Test') {
+            steps {
+                dir('app') {
+                    sh 'node --version'
+                    sh 'npm test'
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest app/"
+                sh "docker images ${IMAGE_NAME}"
+            }
+        }
+
+        stage('Push to Docker Hub') {
+            when { expression { params.PUSH_TO_DOCKERHUB } }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub',
+                                 usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+                    sh 'echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin'
+                    sh "docker push ${IMAGE_NAME}:${IMAGE_TAG}"
+                    sh "docker push ${IMAGE_NAME}:latest"
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                sh """
+                    sed -e 's|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|' \
+                        -e 's|VERSION_PLACEHOLDER|${IMAGE_TAG}|' \
+                        ${K8S_DIR}/deployment.yaml | kubectl apply -f -
+                    kubectl apply -f ${K8S_DIR}/service.yaml
+                """
+            }
+        }
+
+        stage('Verify Rollout') {
+            steps {
+                sh 'kubectl rollout status deployment/demo-app -n exp7 --timeout=120s'
+                sh 'kubectl get deployments,pods,services -n exp7 -o wide'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "SUCCESS: ${IMAGE_NAME}:${IMAGE_TAG} is live at http://localhost:30007"
+        }
+        failure {
+            echo 'Deployment failed - rolling back to the previous version'
+            sh 'kubectl rollout undo deployment/demo-app -n exp7 || true'
+        }
+        always {
+            sh 'docker logout || true'
+        }
+    }
+}

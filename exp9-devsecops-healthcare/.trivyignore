@@ -1,0 +1,2 @@
+# Accepted risks go here, one CVE or check ID per line, with a reason. Example:
+# CVE-2024-00000   # not reachable in our code, fix scheduled with vendor

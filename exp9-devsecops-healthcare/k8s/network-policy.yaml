@@ -1,0 +1,26 @@
+# Zero-trust networking: deny everything by default, then allow only
+# incoming traffic to the app port. (Enforced only if your cluster's CNI
+# supports NetworkPolicy, e.g. Calico. Docker Desktop accepts the YAML.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: healthcare
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-portal-http
+  namespace: healthcare
+spec:
+  podSelector:
+    matchLabels:
+      app: patient-portal
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 3000

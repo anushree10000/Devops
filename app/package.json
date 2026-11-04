@@ -1,0 +1,11 @@
+{
+  "name": "devops-demo-app",
+  "version": "1.0.0",
+  "description": "Demo app for Jenkins + Docker + Kubernetes experiments",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test.js"
+  },
+  "license": "MIT"
+}
