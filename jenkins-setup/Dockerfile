@@ -33,5 +33,9 @@ RUN jenkins-plugin-cli --plugins \
     workflow-aggregator git docker-workflow credentials-binding \
     pipeline-stage-view sonar ws-cleanup timestamper
 
+# Generates a container-friendly kubeconfig at startup (see the script for why)
+COPY --chmod=755 kubeconfig-entrypoint.sh /usr/local/bin/kubeconfig-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/kubeconfig-entrypoint.sh"]
+
 # Run as root so Jenkins can use the mounted Docker socket (fine for a lab, not for production)
 USER root

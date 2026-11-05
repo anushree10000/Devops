@@ -23,7 +23,8 @@ devops-lab/
 
 ### 1. Install Docker Desktop and turn on Kubernetes
 1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (give it at least 4 GB RAM in *Settings → Resources*).
-2. *Settings → Kubernetes → Enable Kubernetes → Apply & Restart*. Wait for the green "Kubernetes running" light.
+2. *Settings → Kubernetes → Enable Kubernetes*, choose cluster type **Kubeadm** (not *kind*), then *Apply & Restart*. Wait for the green "Kubernetes running" light.
+   > Why Kubeadm: it runs images straight from Docker Desktop's image store, so images Jenkins builds deploy without pushing. A *kind* cluster can't see them (pods fail with `ErrImageNeverPull`/`ErrImagePull`).
 3. Check in a terminal:
    ```bash
    kubectl get nodes          # should show docker-desktop   Ready
@@ -74,9 +75,9 @@ Experiment-specific steps are in each folder's README.
 ## Troubleshooting
 | Problem | Fix |
 |---|---|
-| `docker exec jenkins kubectl get nodes` fails | Make sure Kubernetes is running in Docker Desktop, then `docker compose restart jenkins`. Your kubeconfig must point to `https://kubernetes.docker.internal:6443` (Docker Desktop's default). |
+| `docker exec jenkins kubectl get nodes` fails | Make sure Kubernetes (Kubeadm) is running in Docker Desktop and `~/.kube/config` exists **before** starting Jenkins (otherwise Docker creates an empty folder there; delete it and re-enable Kubernetes). Then `docker compose up -d --force-recreate jenkins`. On start, Jenkins copies your kubeconfig and rewrites `https://127.0.0.1:6443` to `https://kubernetes.docker.internal:6443`; check with `docker logs jenkins \| grep kubeconfig`. |
 | `permission denied ... docker.sock` | The compose file runs Jenkins as root to avoid this; rebuild with `docker compose up -d --build`. |
-| Pods stuck in `ImagePullBackOff` | You're not on Docker Desktop Kubernetes (e.g. Minikube). Tick `PUSH_TO_DOCKERHUB` so the cluster can pull from Docker Hub. |
+| Pods stuck in `ImagePullBackOff` / `ErrImageNeverPull` | The cluster can't see local images: you're on Docker Desktop's *kind* cluster type or on Minikube. Switch Docker Desktop to **Kubeadm**, or tick `PUSH_TO_DOCKERHUB`. |
 | Port 8080 or 9000 already in use | Change the left-hand port in `docker-compose.yml`, e.g. `"8081:8080"`. |
 | SonarQube container keeps restarting | Give Docker Desktop more memory (4 GB+). |
 
