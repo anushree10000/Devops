@@ -35,7 +35,7 @@ spec:
             - name: APP_VERSION
               value: "VERSION_PLACEHOLDER"
             - name: APP_COLOR
-              value: "blue"
+              value: "green"
           readinessProbe:
             httpGet:
               path: /health
