@@ -3,6 +3,10 @@
 // which version (blue / green) is serving traffic.
 const http = require('http');
 
+// ✏️  DEMO: edit this line on GitHub and commit. Jenkins picks up the change,
+//     rebuilds the image and redeploys it to Kubernetes automatically.
+const MESSAGE = 'Hello from the CI/CD pipeline!';
+
 const PORT = process.env.PORT || 3000;
 const VERSION = process.env.APP_VERSION || 'v1';
 const COLOR = process.env.APP_COLOR || 'blue';
@@ -20,6 +24,7 @@ function handler(req, res) {
 <head><title>DevOps Demo App</title></head>
 <body style="font-family:sans-serif;text-align:center;padding-top:80px;background:${COLOR === 'green' ? '#d4f7d4' : '#d4e4f7'}">
   <h1>DevOps Demo App</h1>
+  <h2 style="color:#b5179e">${MESSAGE}</h2>
   <h2>Version: ${VERSION}</h2>
   <h2>Environment: <span style="color:${COLOR}">${COLOR.toUpperCase()}</span></h2>
   <p>Deployed with Jenkins + Docker + Kubernetes</p>

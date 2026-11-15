@@ -31,7 +31,8 @@ RUN ARCH=$(dpkg --print-architecture | sed 's/amd64/x64/') \
 # Jenkins plugins
 RUN jenkins-plugin-cli --plugins \
     workflow-aggregator git docker-workflow credentials-binding \
-    pipeline-stage-view sonar ws-cleanup timestamper
+    pipeline-stage-view sonar ws-cleanup timestamper \
+    build-monitor-plugin
 
 # Generates a container-friendly kubeconfig at startup (see the script for why)
 COPY --chmod=755 kubeconfig-entrypoint.sh /usr/local/bin/kubeconfig-entrypoint.sh

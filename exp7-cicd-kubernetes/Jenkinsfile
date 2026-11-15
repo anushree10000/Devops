@@ -5,8 +5,14 @@ pipeline {
     parameters {
         string(name: 'DOCKERHUB_USER', defaultValue: 'your-dockerhub-username',
                description: 'Your Docker Hub username')
-        booleanParam(name: 'PUSH_TO_DOCKERHUB', defaultValue: true,
-                     description: 'Push the image to Docker Hub (needs the "dockerhub" credential)')
+        booleanParam(name: 'PUSH_TO_DOCKERHUB', defaultValue: false,
+                     description: 'Push the image to Docker Hub (needs the "dockerhub" credential). Not needed with Docker Desktop Kubernetes.')
+    }
+
+    // Checks GitHub every minute: any new commit on main starts a build + redeploy automatically.
+    // (Jenkins registers this trigger after the job has run once.)
+    triggers {
+        pollSCM('* * * * *')
     }
 
     environment {
@@ -25,6 +31,9 @@ pipeline {
             steps {
                 checkout scm
                 sh 'git log -1 --oneline'
+                script {
+                    currentBuild.description = sh(script: 'git log -1 --pretty=%s', returnStdout: true).trim()
+                }
             }
         }
 
